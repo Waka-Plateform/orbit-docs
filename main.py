@@ -3,7 +3,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from config import settings
 from mcp_server import mcp as mcp_instance
@@ -24,6 +24,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orbit Docs", lifespan=lifespan)
 app.mount("/mcp", mcp_instance.streamable_http_app())
+
+
+@app.middleware("http")
+async def fix_mcp_trailing_slash(request: Request, call_next):
+    if request.url.path == "/mcp" and request.method in ("POST", "GET", "DELETE"):
+        request.scope["path"] = "/mcp/"
+    return await call_next(request)
 
 
 @app.get("/health")
