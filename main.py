@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from config import settings
 from mcp_server import mcp as mcp_instance
@@ -30,6 +31,10 @@ app.mount("/mcp", mcp_instance.streamable_http_app())
 async def fix_mcp_trailing_slash(request: Request, call_next):
     if request.url.path == "/mcp" and request.method in ("POST", "GET", "DELETE"):
         request.scope["path"] = "/mcp/"
+    # GET /mcp/ sans mcp-session-id : health probes / clients non-MCP → 200
+    if request.url.path in ("/mcp", "/mcp/") and request.method == "GET":
+        if not request.headers.get("mcp-session-id"):
+            return JSONResponse({"status": "ok", "service": "orbit-docs", "mcp": True})
     return await call_next(request)
 
 
