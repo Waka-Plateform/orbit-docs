@@ -19,6 +19,7 @@ mcp = FastMCP(
     host="0.0.0.0",
     port=8000,
     streamable_http_path="/",
+    stateless_http=True,
 )
 
 
