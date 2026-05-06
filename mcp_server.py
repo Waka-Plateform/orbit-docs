@@ -1,4 +1,4 @@
-"""MCP tool definitions for orbit-docs – 16 tools."""
+"""MCP tool definitions for orbit-docs – 21 tools."""
 
 from typing import Annotated
 
@@ -12,9 +12,10 @@ from docs_ops import client
 mcp = FastMCP(
     "orbit-docs",
     instructions=(
-        "Documentation & knowledge server for Microsoft Learn, Azure best practices, "
-        "GitHub docs, and code examples. Use these tools to search documentation, "
-        "fetch article content, find code samples, and explore GitHub repositories."
+        "Documentation, best-practices and pricing server. Wraps the official "
+        "Microsoft Learn MCP Server (search, fetch, code samples), the official "
+        "Azure Best Practices resources (microsoft/mcp), the public Azure Retail "
+        "Prices API (calculator equivalent), plus GitHub docs and code search."
     ),
     host="0.0.0.0",
     port=8000,
@@ -189,3 +190,76 @@ async def search_github_repos(
 ) -> str:
     """Search GitHub repositories by topic, sorted by stars."""
     return _r(await client.search_github_repos(query, language, top))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# §4  Microsoft Learn MCP Server (official, public, no auth)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+async def microsoft_docs_search(
+    query: Annotated[str, Field(description="Topic about Microsoft/Azure products, services, APIs, SDKs")],
+) -> str:
+    """Search official Microsoft Learn — returns up to 10 high-quality content chunks (≤500 tokens each) extracted from Microsoft Learn and other first-party sources. Use this to ground answers in trusted Microsoft documentation."""
+    return _r(await client.microsoft_docs_search(query))
+
+
+@mcp.tool()
+async def microsoft_docs_fetch(
+    url: Annotated[str, Field(description="URL of a Microsoft Learn / microsoft.com documentation page (HTML)")],
+) -> str:
+    """Fetch a Microsoft Learn page and convert it to markdown (full content with headings, code blocks, tables, links). Use AFTER microsoft_docs_search when you need the complete article."""
+    return _r(await client.microsoft_docs_fetch(url))
+
+
+@mcp.tool()
+async def microsoft_code_sample_search(
+    query: Annotated[str, Field(description="Descriptive query, SDK/class/method name, or code snippet")],
+    language: Annotated[str, Field(description="Optional language filter: csharp, javascript, typescript, python, powershell, azurecli, al, sql, java, kusto, cpp, go, rust, ruby, php")] = "",
+) -> str:
+    """Search official Microsoft/Azure code samples on Microsoft Learn. Returns the LATEST OFFICIAL code snippets — use whenever generating Microsoft/Azure code."""
+    return _r(await client.microsoft_code_sample_search(query, language))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# §5  Azure Best Practices (official .txt resources from microsoft/mcp)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+async def get_azure_best_practices(
+    resource: Annotated[str, Field(description="Target resource: 'general', 'azurefunctions', 'static-web-app', 'coding-agent', or 'ai-app'")] = "general",
+    action: Annotated[str, Field(description="Action: 'all', 'code-generation', or 'deployment' (static-web-app, coding-agent, and ai-app only support 'all')")] = "all",
+) -> str:
+    """Return Microsoft official Azure best practices for code generation and deployment. Backed by the live .txt resources from microsoft/mcp (Azure.Mcp.Tools.AzureBestPractices). Always call this BEFORE generating Azure-related code or deployment artifacts."""
+    return _r(await client.get_azure_best_practices(resource, action))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# §6  Azure Retail Prices (public API, no auth)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+async def azure_retail_prices(
+    service_name: Annotated[str, Field(description="Filter by service name (e.g. 'Virtual Machines', 'Container Apps', 'Azure OpenAI'). Case-sensitive.")] = "",
+    arm_region_name: Annotated[str, Field(description="Filter by ARM region (e.g. 'francecentral', 'westeurope', 'eastus')")] = "",
+    arm_sku_name: Annotated[str, Field(description="Filter by ARM SKU (e.g. 'Standard_D2s_v5', 'Standard_F16s')")] = "",
+    price_type: Annotated[str, Field(description="Price type: 'Consumption', 'Reservation', or 'DevTestConsumption'")] = "",
+    currency_code: Annotated[str, Field(description="ISO currency code (e.g. 'USD', 'EUR'). Microsoft retail prices are USD; non-USD is reference only.")] = "USD",
+    extra_filter: Annotated[str, Field(description="Additional OData $filter clause appended with AND (e.g. \"contains(meterName, 'Spot')\")")] = "",
+    top: Annotated[int, Field(description="Max results to return (1-1000)", ge=1, le=1000)] = 100,
+) -> str:
+    """Query Azure Retail Prices API (public, unauthenticated) — equivalent to the Azure Pricing Calculator data. Returns retail prices for SKUs across services, regions, and price types (consumption/reservation/savings plan)."""
+    return _r(
+        await client.azure_retail_prices(
+            service_name=service_name,
+            arm_region_name=arm_region_name,
+            arm_sku_name=arm_sku_name,
+            price_type=price_type,
+            currency_code=currency_code,
+            extra_filter=extra_filter,
+            top=top,
+        )
+    )

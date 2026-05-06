@@ -2,16 +2,53 @@
 
 import base64
 import html
+import json
 import re
 
 import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
 from config import settings
 
 LEARN_SEARCH = "https://learn.microsoft.com/api/search"
 LEARN_BASE = "https://learn.microsoft.com"
+LEARN_MCP_URL = "https://learn.microsoft.com/api/mcp"
 GITHUB_API = "https://api.github.com"
 GITHUB_DOCS_RAW = "https://raw.githubusercontent.com/github/docs/main/content"
+AZURE_RETAIL_PRICES = "https://prices.azure.com/api/retail/prices"
+AZURE_RETAIL_API_VERSION = "2023-01-01-preview"
+
+# Microsoft Azure Best Practices — official .txt resources from microsoft/mcp
+BP_BASE = (
+    "https://raw.githubusercontent.com/microsoft/mcp/main/"
+    "tools/Azure.Mcp.Tools.AzureBestPractices/src/Resources"
+)
+BP_FILES: dict[tuple[str, str], list[str]] = {
+    ("general", "code-generation"): ["azure-general-codegen-best-practices.txt"],
+    ("general", "deployment"): ["azure-general-deployment-best-practices.txt"],
+    ("general", "all"): [
+        "azure-general-codegen-best-practices.txt",
+        "azure-general-deployment-best-practices.txt",
+    ],
+    ("azurefunctions", "code-generation"): [
+        "azure-functions-codegen-best-practices.txt"
+    ],
+    ("azurefunctions", "deployment"): [
+        "azure-functions-deployment-best-practices.txt"
+    ],
+    ("azurefunctions", "all"): [
+        "azure-functions-codegen-best-practices.txt",
+        "azure-functions-deployment-best-practices.txt",
+    ],
+    ("static-web-app", "all"): ["azure-swa-best-practices.txt"],
+    ("coding-agent", "all"): ["azure-coding-agent-best-practices.txt"],
+    ("ai-app", "all"): [
+        "ai-best-practices-core.txt",
+        "ai-background-knowledge.txt",
+        "ai-error-patterns.txt",
+    ],
+}
 
 
 class DocsClient:
@@ -244,6 +281,128 @@ class DocsClient:
                 }
             )
         return {"count": data.get("total_count", 0), "results": results}
+
+    # ── Microsoft Learn MCP Server (official, public, no auth) ───────
+
+    async def _learn_mcp_call(self, tool: str, args: dict) -> dict:
+        """Call the public Microsoft Learn MCP server via streamable HTTP."""
+        async with streamablehttp_client(LEARN_MCP_URL) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool, args)
+        texts = []
+        for c in result.content:
+            t = getattr(c, "text", None)
+            if t:
+                texts.append(t)
+        joined = "\n".join(texts)
+        try:
+            return json.loads(joined)
+        except json.JSONDecodeError:
+            return {"content": joined}
+
+    async def microsoft_docs_search(self, query: str) -> dict:
+        """Search Microsoft Learn (chunks ≤500 tokens)."""
+        return await self._learn_mcp_call("microsoft_docs_search", {"query": query})
+
+    async def microsoft_docs_fetch(self, url: str) -> dict:
+        """Fetch a Microsoft Learn page and convert to markdown."""
+        return await self._learn_mcp_call("microsoft_docs_fetch", {"url": url})
+
+    async def microsoft_code_sample_search(
+        self, query: str, language: str = ""
+    ) -> dict:
+        """Search official Microsoft Learn code samples."""
+        args: dict = {"query": query}
+        if language:
+            args["language"] = language
+        return await self._learn_mcp_call("microsoft_code_sample_search", args)
+
+    # ── Azure Best Practices (official files from microsoft/mcp) ─────
+
+    async def get_azure_best_practices(
+        self, resource: str = "general", action: str = "all"
+    ) -> dict:
+        """Fetch Microsoft official Azure best practices for code-gen/deployment."""
+        key = (resource, action)
+        if key not in BP_FILES:
+            return {
+                "error": f"unknown combo resource='{resource}' action='{action}'",
+                "supported": [
+                    {"resource": r, "action": a} for (r, a) in BP_FILES.keys()
+                ],
+            }
+        c = await self._client()
+        sections = []
+        for fname in BP_FILES[key]:
+            r = await c.get(f"{BP_BASE}/{fname}")
+            r.raise_for_status()
+            sections.append({"file": fname, "content": r.text})
+        return {"resource": resource, "action": action, "sections": sections}
+
+    # ── Azure Retail Prices (public, no auth) ────────────────────────
+
+    async def azure_retail_prices(
+        self,
+        service_name: str = "",
+        arm_region_name: str = "",
+        arm_sku_name: str = "",
+        price_type: str = "",
+        currency_code: str = "USD",
+        extra_filter: str = "",
+        top: int = 100,
+    ) -> dict:
+        """Query Azure Retail Prices API. Build OData $filter from common fields."""
+        clauses: list[str] = []
+        if service_name:
+            clauses.append(f"serviceName eq '{service_name}'")
+        if arm_region_name:
+            clauses.append(f"armRegionName eq '{arm_region_name}'")
+        if arm_sku_name:
+            clauses.append(f"armSkuName eq '{arm_sku_name}'")
+        if price_type:
+            clauses.append(f"priceType eq '{price_type}'")
+        if extra_filter:
+            clauses.append(extra_filter)
+        params: dict = {
+            "api-version": AZURE_RETAIL_API_VERSION,
+            "currencyCode": f"'{currency_code}'",
+        }
+        if clauses:
+            params["$filter"] = " and ".join(clauses)
+        c = await self._client()
+        r = await c.get(AZURE_RETAIL_PRICES, params=params)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("Items", [])[: max(1, min(top, 1000))]
+        results = []
+        for it in items:
+            results.append(
+                {
+                    "serviceName": it.get("serviceName"),
+                    "serviceFamily": it.get("serviceFamily"),
+                    "productName": it.get("productName"),
+                    "skuName": it.get("skuName"),
+                    "armSkuName": it.get("armSkuName"),
+                    "armRegionName": it.get("armRegionName"),
+                    "location": it.get("location"),
+                    "meterName": it.get("meterName"),
+                    "unitOfMeasure": it.get("unitOfMeasure"),
+                    "retailPrice": it.get("retailPrice"),
+                    "unitPrice": it.get("unitPrice"),
+                    "currencyCode": it.get("currencyCode"),
+                    "priceType": it.get("type"),
+                    "reservationTerm": it.get("reservationTerm"),
+                    "savingsPlan": it.get("savingsPlan"),
+                    "effectiveStartDate": it.get("effectiveStartDate"),
+                }
+            )
+        return {
+            "count": len(results),
+            "total": data.get("Count", len(results)),
+            "next_page": data.get("NextPageLink"),
+            "results": results,
+        }
 
     async def close(self):
         if self._http and not self._http.is_closed:
